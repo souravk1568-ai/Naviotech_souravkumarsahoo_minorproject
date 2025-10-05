@@ -1,0 +1,35 @@
+This is the customer telecom list thw link below is to access the file......
+/content/sample_data
+than..........
+/content/WA_Fn-UseC_-Telco-Customer-Churn (1).csv
+/content/WA_Fn-UseC_-Telco-Customer-Churn.csv
+
+
+this the lists of the customers where i have made this projects prediction.
+
+Need to Import :
+
+!pip install -q imbalanced-learn shap kaggle
+
+!pip install -q xgboost
+
+
+
+from google.colab import drive
+drive.mount('/content/drive')
+
+
+from google.colab import files
+uploaded = files.upload()  # choose Telco-Customer-Churn.csv
+import io, pandas as pd
+df = pd.read_csv(io.BytesIO(next(iter(uploaded.values()))))
+
+import pandas as pd, numpy as np
+print("Shape:", df.shape)
+display(df.head())
+display(df.info())
+display(df.describe(include='all'))
+print("Missing values per column:\n", df.isnull().sum())
+# show churn distribution
+import seaborn as sns, matplotlib.pyplot as plt
+sns.countplot(x='Churn', data=df); plt.title('Churn distribution'); plt.show()
