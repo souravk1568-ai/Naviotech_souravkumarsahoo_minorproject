@@ -1,1 +1,213 @@
+from google.colab import drive
+drive.mount('/content/drive')
 
+!pip install -q imbalanced-learn shap kaggle
+!pip install -q xgboost
+
+from google.colab import drive
+drive.mount('/content/drive')
+
+
+from google.colab import files
+uploaded = files.upload()  
+import io, pandas as pd
+df = pd.read_csv(io.BytesIO(next(iter(uploaded.values()))))
+
+import pandas as pd, numpy as np
+print("Shape:", df.shape)
+display(df.head())
+display(df.info())
+display(df.describe(include='all'))
+print("Missing values per column:\n", df.isnull().sum())
+
+import seaborn as sns, matplotlib.pyplot as plt
+sns.countplot(x='Churn', data=df); plt.title('Churn distribution'); plt.show()
+
+# Cell 5: cleaning
+# Common fixes for Telco dataset
+df['TotalCharges'] = pd.to_numeric(df['TotalCharges'], errors='coerce')  # convert
+print("TotalCharges missing before drop:", df['TotalCharges'].isna().sum())
+df = df.dropna(subset=['TotalCharges'])  # drop rows where TotalCharges couldn't convert
+df = df.drop_duplicates()
+# drop customerID column (identifier)
+if 'customerID' in df.columns:
+    df = df.drop('customerID', axis=1)
+print("Cleaned shape:", df.shape)
+
+
+# Cell 6: preparing the target to watch
+X = df.drop('Churn', axis=1)
+y = df['Churn'].copy()
+# in the map Yes or No to 1 or 0 if needed 
+if y.dtype == 'object':
+    y = y.map({'Yes':1, 'No':0})
+
+from sklearn.model_selection import train_test_split
+RND = 42
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.20, stratify=y, random_state=RND
+)
+print(X_train.shape, X_test.shape, y_train.mean())
+
+# Cell 7: automatic column lists and pipelines
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+
+# find numeric/categorical columns automatically
+num_cols = X.select_dtypes(include=['int64','float64']).columns.tolist()
+cat_cols = X.select_dtypes(include=['object']).columns.tolist()
+
+# numeric pipeline
+num_pipe = Pipeline([
+    ('imputer', SimpleImputer(strategy='median')),
+    ('scaler', StandardScaler())
+])
+
+# categorical pipeline
+cat_pipe = Pipeline([
+    ('imputer', SimpleImputer(strategy='most_frequent')),
+    ('ohe', OneHotEncoder(handle_unknown='ignore'))
+])
+
+preprocessor = ColumnTransformer([
+    ('num', num_pipe, num_cols),
+    ('cat', cat_pipe, cat_cols)
+], remainder='drop')
+
+# Cell 8: model pipelines using imblearn to include SMOTE if needed
+from imblearn.pipeline import Pipeline as ImbPipeline
+from imblearn.over_sampling import SMOTE
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+
+# Baseline pipeline (no SMOTE)
+pipe_rf = Pipeline([
+    ('pre', preprocessor),
+    ('clf', RandomForestClassifier(random_state=RND, n_jobs=-1))
+])
+
+# Pipeline with SMOTE (apply only on training inside CV)
+pipe_rf_smote = ImbPipeline([
+    ('pre', preprocessor),
+    ('smote', SMOTE(random_state=RND)),
+    ('clf', RandomForestClassifier(random_state=RND, n_jobs=-1))
+])
+
+# Logistic pipeline (good baseline)
+pipe_lr = Pipeline([
+    ('pre', preprocessor),
+    ('clf', LogisticRegression(max_iter=1000, random_state=RND))
+])
+
+# Cell 9: train baseline RF and LR
+from sklearn.metrics import classification_report, roc_auc_score
+
+# fit RandomForest baseline
+pipe_rf.fit(X_train, y_train)
+proba_rf = pipe_rf.predict_proba(X_test)[:,1]
+pred_rf = pipe_rf.predict(X_test)
+print("RandomForest AUC:", roc_auc_score(y_test, proba_rf))
+print(classification_report(y_test, pred_rf))
+
+# fit Logistic baseline
+pipe_lr.fit(X_train, y_train)
+proba_lr = pipe_lr.predict_proba(X_test)[:,1]
+pred_lr = pipe_lr.predict(X_test)
+print("LogisticRegression AUC:", roc_auc_score(y_test, proba_lr))
+print(classification_report(y_test, pred_lr))
+
+# Cell 10: grid search for RandomForest with SMOTE pipeline
+from sklearn.model_selection import GridSearchCV, StratifiedKFold
+
+param_grid = {
+    'clf__n_estimators': [100, 250],
+    'clf__max_depth': [None, 10, 20],
+    'clf__min_samples_leaf': [1, 2, 4]
+}
+
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=RND)
+gs = GridSearchCV(pipe_rf_smote, param_grid, scoring='roc_auc', cv=cv, n_jobs=-1, verbose=2)
+gs.fit(X_train, y_train)
+
+print("Best params:", gs.best_params_)
+print("Best CV AUC:", gs.best_score_)
+best_model = gs.best_estimator_
+
+# Cell 11: detailed evaluation
+from sklearn.metrics import roc_curve, auc, confusion_matrix, precision_recall_curve, average_precision_score
+import matplotlib.pyplot as plt, seaborn as sns
+
+y_pred = best_model.predict(X_test)
+y_score = best_model.predict_proba(X_test)[:,1]
+print(classification_report(y_test, y_pred))
+print("ROC AUC:", roc_auc_score(y_test, y_score))
+print("Average Precision (PR AUC):", average_precision_score(y_test, y_score))
+
+# Confusion matrix
+cm = confusion_matrix(y_test, y_pred)
+plt.figure(figsize=(5,4))
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+plt.xlabel('Predicted'); plt.ylabel('Actual'); plt.title('Confusion Matrix')
+plt.show()
+
+# ROC curve
+fpr, tpr, _ = roc_curve(y_test, y_score)
+plt.figure()
+plt.plot(fpr, tpr, label=f'AUC = {auc(fpr,tpr):.3f}')
+plt.plot([0,1],[0,1],'--', color='grey')
+plt.xlabel('FPR'); plt.ylabel('TPR'); plt.title('ROC Curve'); plt.legend()
+plt.show()
+
+# Precision-Recall curve
+precision, recall, _ = precision_recall_curve(y_test, y_score)
+plt.figure()
+plt.plot(recall, precision, label=f'AP = {average_precision_score(y_test, y_score):.3f}')
+plt.xlabel('Recall'); plt.ylabel('Precision'); plt.title('Precision-Recall Curve'); plt.legend()
+plt.show()
+
+# Cell 12: extract feature names and plot importances
+import numpy as np
+# helper to get names
+def get_feature_names(column_transformer):
+    # Works because we know names for numeric and cat transformers
+    feature_names = []
+    # numeric
+    if len(num_cols) > 0:
+        feature_names += list(num_cols)
+    # categorical (get names from onehot)
+    ohe = column_transformer.named_transformers_['cat'].named_steps['ohe']
+    cat_names = ohe.get_feature_names_out(cat_cols).tolist()
+    feature_names += cat_names
+    return feature_names
+
+feature_names = get_feature_names(best_model.named_steps['pre'])
+importances = best_model.named_steps['clf'].feature_importances_
+feat_imp = pd.DataFrame({'feature': feature_names, 'importance': importances}).sort_values('importance', ascending=False).head(25)
+
+plt.figure(figsize=(8,10))
+sns.barplot(x='importance', y='feature', data=feat_imp); plt.title('Top feature importances (RF)')
+plt.tight_layout(); plt.show()
+
+# Cell 13: save
+import joblib
+import os
+
+save_dir = '/content/drive/MyDrive/churn_project/'
+# Create the directory if it doesn't exist
+os.makedirs(save_dir, exist_ok=True)
+
+save_path = os.path.join(save_dir, 'churn_rf_model.joblib')
+joblib.dump(best_model, save_path)
+print("Saved model to:", save_path)
+
+# Save predictions
+preds_df = X_test.copy()
+preds_df['actual'] = y_test.values
+preds_df['pred'] = y_pred
+preds_df['pred_proba'] = y_score
+preds_df.to_csv(os.path.join(save_dir, 'predictions_test.csv'), index=False)
+print("Saved predictions csv")
+
+#All the definations are mentioned in the '#' format to easily understand the code part.....
